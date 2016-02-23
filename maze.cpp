@@ -8,6 +8,7 @@
 #include <windows.h>
 #include<conio.h>
 #include<set>
+#include<math.h>
 using namespace std;
 
 enum Cell
@@ -23,6 +24,7 @@ enum Direction
 	Right,
 	Up,
 	Down,
+	Stay,
 	Last // because it's C++
 };
 struct Point
@@ -34,6 +36,21 @@ struct Point
 		this->y=y;
 	}
 };
+//--------------------------------------------------------------------------------------------------------------------------------
+//NEVER write code this way
+//Direction probably should be class or several points with unique name.
+//Enum was a bad idea.
+//--------------------------------------------------------------------------------------------------------------------------------
+map<Direction, Point> shiftByDirection =
+{
+	{Left, Point(-1,0)},
+	{Right, Point(1,0)},
+	{Up, Point(0,-1)},
+	{Down, Point(0,1)},
+	{Stay, Point(0,0)}
+};
+//--------------------------------------------------------------------------------------------------------------------------------
+
 //--------------------------------------------------------------------------------------------------------------------------------
 //To use Point as key of std::map. I'm too lazy to write a comparison class
 //--------------------------------------------------------------------------------------------------------------------------------
@@ -62,13 +79,22 @@ static Point operator -(Point f, Point s)
 {
 	return Point(f.x-s.x,f.y-s.y);
 }
+static bool operator ==(Point f, Point s)
+{
+	return f.x==s.x&&f.y==s.y;
+}
 
+Point agentPosition;
+
+Point nextPosByDir(Direction dir)
+{
+	return agentPosition+shiftByDirection[dir];
+}
 
 //--------------------------------------------------------------------------------------------------------------------------------
 //For testing
 //--------------------------------------------------------------------------------------------------------------------------------
 vector<string> maze;
-
 void fillMaze()
 {
 	char c;
@@ -86,9 +112,38 @@ void fillMaze()
 		}
 	}
 }
-Cell getCell(Point position)
+//Can be replaced with "return Point(0,0);" or "return Point(100,42);". Doesn't matter if you have no maze
+Point getStartPoint()
 {
-	//Should be replaced with hardware handling
+	for(int i=0;i<maze.size();++i)
+	{
+		for(int j=0;j<maze[i].length();++j)
+		{
+			if(maze[i][j]=='s')
+			{
+				return Point(j,i);
+			}
+		}
+	}
+	throw "Start point was not found";
+}
+//Can be replaced with hardware handling
+Cell getCell(Direction dir)
+{
+	Point position = nextPosByDir(dir);
+	
+	//For example, uncomment this, to solve empty room surrounded by finish points
+	/*
+	Point shiftFromOrigin=position-getStartPoint();
+	if(abs(shiftFromOrigin.x)==5||abs(shiftFromOrigin.y)==5)
+	{
+		return Finish;
+	}
+	else
+	{
+		return Empty;
+	}
+	*/
 	if(position.y<0||position.y>=maze.size())
 	{
 		return Empty;
@@ -116,41 +171,6 @@ Cell getCell(Point position)
 	}
 	throw "Unexpected maze symbol";
 }
-Point getStartPoint()
-{
-	for(int i=0;i<maze.size();++i)
-	{
-		for(int j=0;j<maze[i].length();++j)
-		{
-			if(maze[i][j]=='s')
-			{
-				return Point(j,i);
-			}
-		}
-	}
-	throw "Start point was not found";
-}
-//--------------------------------------------------------------------------------------------------------------------------------
-
-//--------------------------------------------------------------------------------------------------------------------------------
-//NEVER write code this way
-//Direction probably should be class or several points with unique name.
-//Enum was a bad idea.
-//--------------------------------------------------------------------------------------------------------------------------------
-map<Direction, Point> shiftByDirection =
-{
-	{Left, Point(-1,0)},
-	{Right, Point(1,0)},
-	{Up, Point(0,-1)},
-	{Down, Point(0,1)}
-};
-map<Point, Direction> directionByShift =
-{
-	{Point(-1,0), Left},
-	{Point(1,0), Right},
-	{Point(0,-1), Up},
-	{Point(0,1), Down}
-};
 //--------------------------------------------------------------------------------------------------------------------------------
 class Vertex
 {
@@ -174,14 +194,20 @@ public:
 };
 //Processed vertices by their positions
 map<Point, Vertex*> graph;
-//If a vertex with position "pos" was already processed, return it. Otherwise, return a new vertex
-Vertex* getOrCreateVertex(Point pos)
+//Loads all cells those can be tested for obstacles on this frame and yet not loaded
+void tryExpandGraph()
 {
-	if(graph.count(pos)==0)
+	for(int dir = Left; dir!=Last; ++dir)
 	{
-		graph[pos]=new Vertex(pos, getCell(pos), false);
+		Direction castedDir=static_cast<Direction>(dir);
+		Point vpos=agentPosition+shiftByDirection[castedDir];
+		if(graph.count(vpos)!=0)
+		{
+			continue;
+		}
+		Vertex* res = new Vertex(vpos,getCell(castedDir),castedDir==Stay);
+		graph[vpos]=res;
 	}
-	return graph[pos];
 }
 //Vertices adjacent to "vert"
 vector<Vertex*> getNeighbours(Vertex* vert)
@@ -189,8 +215,18 @@ vector<Vertex*> getNeighbours(Vertex* vert)
 	vector<Vertex*> res;
 	for(int dir = Left; dir!=Last; ++dir)
 	{
-		Point neighbourPos=vert->pos+shiftByDirection[static_cast<Direction>(dir)];
-		res.push_back(getOrCreateVertex(neighbourPos));
+		Direction castedDir=static_cast<Direction>(dir);
+		if(castedDir==Stay)
+		{
+			continue;
+			
+		}
+		Point neighbourPos = shiftByDirection[castedDir] + vert->pos;
+		if(graph.count(neighbourPos)==0)
+		{
+			continue;
+		}
+		res.push_back(graph[neighbourPos]);
 	}
 	return res;
 }
@@ -229,13 +265,14 @@ vector<Vertex*> restorePath(Vertex* start, Vertex* cur)
 //"end" is the closest vertex to "start" from set of vertices those are either 
 //unexplored or represent finish of the maze
 //https://en.wikipedia.org/wiki/Breadth-first_search
-vector<Vertex*> getNextVertices(Point pos)
+vector<Vertex*> getNextVertices()
 {
+	tryExpandGraph();
 	//Vertices visited by this bfs. set can be replaced for optimization
 	set<Vertex*> was;
 	//queue of vertices
 	queue<Vertex*> q;
-	Vertex* start = getOrCreateVertex(pos);
+	Vertex* start = graph[agentPosition];
 	q.push(start);
 	while(!q.empty())
 	{
@@ -255,7 +292,7 @@ vector<Vertex*> getNextVertices(Point pos)
 			}
 			(*i)->previous=current;
 			if((*i)->cell==Finish)
-			{
+			{ 
 				return restorePath(start,(*i));
 			}
 			q.push(*i);
@@ -309,26 +346,29 @@ int main()
 {
 	freopen("input.txt","r",stdin);
 	fillMaze();
-	Point pos=getStartPoint();
-	getOrCreateVertex(pos)->isVisited=true;
+	agentPosition=getStartPoint();
+	
 	vector<Vertex*> path;
+	
+	tryExpandGraph();
 	while(true)
 	{
-		path = getNextVertices(pos);
+		path = getNextVertices();
 		for(vector<Vertex*>::iterator i = path.begin();i!=path.end();++i)
 		{
-			//fprintf(stderr,"position={%d; %d}\n",(*i)->pos.x,(*i)->pos.y);
 			display(*i);
-			pos=(*i)->pos;
+			agentPosition=(*i)->pos;
 			(*i)->isVisited=true;
 			
-			if(getCell(pos)==Finish)
+			if(getCell(Stay)==Finish)
 			{
+				printf("Reached finish");
 				goto end;
 			}
 		}
 		if(path.empty())
 		{
+			printf("Failed to reach finish");
 			goto end;
 		}
 	}
